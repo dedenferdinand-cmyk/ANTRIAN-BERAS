@@ -1,0 +1,6 @@
+{
+  "name": "Sistem Antrian BULOG Desa Wargaluyu",
+  "description": "Sistem antrian realtime untuk penyaluran bantuan pangan beras BULOG di Desa Wargaluyu, Kecamatan Arjasari, Kabupaten Bandung.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
