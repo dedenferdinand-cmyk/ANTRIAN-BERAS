@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 import { QueueItem, QueueStats, BroadcastMessage } from './src/types.js';
 
 // Load environment variables
@@ -130,6 +131,63 @@ async function syncAllToSupabase() {
   }
 }
 
+async function syncFromSupabaseOnStartup() {
+  const supabase = getSupabase();
+  if (!supabase) {
+    console.log('Supabase is not configured yet. Using local queue file as database.');
+    return;
+  }
+  
+  try {
+    console.log('Connection detected! Syncing queues from Supabase on startup...');
+    const { data, error } = await supabase
+      .from('antrian')
+      .select('*')
+      .order('nomor_antrian', { ascending: true });
+      
+    if (error) {
+      console.error('Failed to sync from Supabase database table "antrian" on startup:', error.message);
+      return;
+    }
+    
+    if (data && data.length > 0) {
+      const fetchedQueues: QueueItem[] = data.map((row: any) => ({
+        id: row.id,
+        nomor_antrian: Number(row.nomor_antrian),
+        status: row.status,
+        waktu_ambil: row.waktu_ambil || new Date().toISOString(),
+        waktu_panggil: row.waktu_panggil || undefined,
+        waktu_selesai: row.waktu_selesai || undefined
+      }));
+      
+      queuesState = fetchedQueues;
+      
+      // Determine latest called item
+      const activeCalled = fetchedQueues.filter(q => q.status === 'dipanggil');
+      if (activeCalled.length > 0) {
+        activeCalled.sort((a, b) => {
+          const ta = a.waktu_panggil ? new Date(a.waktu_panggil).getTime() : 0;
+          const tb = b.waktu_panggil ? new Date(b.waktu_panggil).getTime() : 0;
+          return tb - ta;
+        });
+        latestCalledState = activeCalled[0];
+      } else {
+        latestCalledState = undefined;
+      }
+      
+      console.log(`Synced ${queuesState.length} records successfully from Supabase!`);
+      saveDatabase();
+    } else {
+      console.log('Supabase table "antrian" is empty. Writing local database to Supabase...');
+      if (queuesState.length > 0) {
+        await syncAllToSupabase();
+      }
+    }
+  } catch (err) {
+    console.error('Exception during startup database sync from Supabase:', err);
+  }
+}
+
 // Compute dynamic stats
 function computeStats(): QueueStats {
   const stats: QueueStats = {
@@ -219,7 +277,7 @@ app.post('/api/queues/take', async (req, res) => {
   const nextNum = size + 1;
 
   const newTicket: QueueItem = {
-    id: `q-${nextNum}-${Date.now()}`,
+    id: crypto.randomUUID(),
     nomor_antrian: nextNum,
     status: 'menunggu',
     waktu_ambil: new Date().toISOString()
@@ -254,7 +312,7 @@ app.post('/api/queues/call', async (req, res) => {
   // Auto-create queue item dynamically if it was never generated from citizen taker
   if (index === -1) {
     const newTicket: QueueItem = {
-      id: `q-${num}-${Date.now()}`,
+      id: crypto.randomUUID(),
       nomor_antrian: num,
       status: 'menunggu',
       waktu_ambil: new Date().toISOString()
@@ -403,6 +461,9 @@ wss.on('connection', (ws) => {
 
 // Create Vite server or serve final production static build
 async function startApp() {
+  // Sync state from Supabase if variables are configured
+  await syncFromSupabaseOnStartup();
+
   if (process.env.NODE_ENV !== 'production') {
     console.log('Starting full-stack helper in DEVELOPMENT mode (mounting Vite)...');
     const vite = await createViteServer({
